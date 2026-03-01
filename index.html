@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>The Quiet House</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;touch-action:none}
+canvas{display:block;position:fixed;inset:0}
+
+#intro{
+  position:fixed;inset:0;background:#000;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  z-index:200;transition:opacity 2s ease;
+}
+#intro-bg{
+  position:absolute;inset:0;
+  background:radial-gradient(ellipse at center, #0a0505 0%, #000 100%);
+}
+#story-text{
+  font-family:'Georgia',serif;font-size:clamp(15px,3vw,21px);
+  text-align:center;max-width:580px;padding:40px;line-height:2;
+  opacity:0;transition:opacity 1.2s ease;color:#b8a898;
+  font-style:italic;position:relative;z-index:1;
+  text-shadow:0 0 30px rgba(180,140,100,0.3);
+}
+#tap-prompt{
+  font-family:'Georgia',serif;font-size:13px;color:#4a3830;
+  letter-spacing:4px;text-transform:uppercase;animation:blink 2.5s infinite;
+  position:relative;z-index:1;margin-top:60px;
+}
+@keyframes blink{0%,100%{opacity:0.2}50%{opacity:0.9}}
+
+#vignette{
+  position:fixed;inset:0;pointer-events:none;z-index:8;
+  background:radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.75) 100%);
+}
+#flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:100;transition:opacity 0.05s}
+#hud{position:fixed;inset:0;pointer-events:none;z-index:10;display:none}
+#crosshair{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:14px;height:14px;
+}
+#crosshair::before,#crosshair::after{content:'';position:absolute;background:rgba(255,255,255,0.55);}
+#crosshair::before{width:1px;height:100%;left:50%;transform:translateX(-50%)}
+#crosshair::after{width:100%;height:1px;top:50%;transform:translateY(-50%)}
+
+#message{
+  position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
+  font-family:'Georgia',serif;font-size:clamp(13px,2.2vw,17px);
+  color:rgba(200,180,160,0.95);text-align:center;z-index:50;
+  pointer-events:none;display:none;font-style:italic;
+  background:rgba(0,0,0,0.5);padding:10px 20px;border-radius:6px;
+  max-width:420px;border:1px solid rgba(255,255,255,0.07);
+  backdrop-filter:blur(4px);
+}
+
+#hint{
+  position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+  font-family:'Georgia',serif;font-size:11px;color:rgba(150,130,110,0.6);
+  z-index:50;pointer-events:none;display:none;letter-spacing:2px;text-align:center;
+  text-transform:uppercase;
+}
+
+/* MOBILE CONTROLS */
+#joystick-wrap{
+  position:fixed;bottom:30px;left:28px;width:110px;height:110px;
+  z-index:30;display:none;
+}
+#joy-base{
+  width:100%;height:100%;border-radius:50%;
+  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);
+  position:relative;
+}
+#joy-knob{
+  width:38px;height:38px;border-radius:50%;
+  background:rgba(255,255,255,0.22);border:1px solid rgba(255,255,255,0.35);
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+}
+#look-zone{
+  position:fixed;top:0;right:0;bottom:0;width:62%;z-index:20;
+}
+#interact-btn{
+  position:fixed;bottom:38px;right:32px;width:62px;height:62px;
+  border-radius:50%;background:rgba(255,255,255,0.08);
+  border:1px solid rgba(255,255,255,0.25);color:rgba(220,200,180,0.85);
+  font-family:'Georgia',serif;font-size:10px;letter-spacing:1px;text-transform:uppercase;
+  display:none;align-items:center;justify-content:center;
+  z-index:35;cursor:pointer;user-select:none;
+}
+
+#loading{
+  position:fixed;inset:0;background:#000;z-index:300;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Georgia',serif;color:#4a3830;font-size:13px;
+  letter-spacing:3px;text-transform:uppercase;
+}
+</style>
+</head>
+<body>
+
+<div id="loading">Waking up...</div>
+
+<div id="intro">
+  <div id="intro-bg"></div>
+  <div id="story-text"></div>
+  <div id="tap-prompt">— tap to begin —</div>
+</div>
+
+<canvas id="c"></canvas>
+
+<div id="hud"><div id="crosshair"></div></div>
+<div id="vignette"></div>
+<div id="flash"></div>
+<div id="message"></div>
+<div id="hint"></div>
+
+<div id="joystick-wrap"><div id="joy-base"><div id="joy-knob"></div></div></div>
+<div id="look-zone"></div>
+<div id="interact-btn">Use</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ─────────────────────────────────────────────
+// DEVICE DETECTION
+// ─────────────────────────────────────────────
+const MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)||'ontouchstart'in window||window.innerWidth<800;
+
+// ─────────────────────────────────────────────
+// GLOBALS
+// ─────────────────────────────────────────────
+let audioCtx, scene, camera, renderer, clock;
+let yaw=0, pitch=0;
+let keys={};
+let joyDelta={x:0,y:0}, joyActive=false;
+let lookTouchId=null, lookLastX=0, lookLastY=0;
+let lampLight, ambientLight;
+let sceneObj={};
+let interactable=[];
+let horrorTimers=[];
+let stepTimer=0;
+let shakeOffset={x:0,y:0};
+let playerActive=false;
+let doorPivot, doorOpen=false, doorAngle=0;
+let rainPositions, rainVels, rainPoints;
+let heartbeatTimer=null, scarePitch=0;
+let msgTimer=null;
+
+// ─────────────────────────────────────────────
+// STORY LINES
+// ─────────────────────────────────────────────
+const storyLines=[
+  "The house has been quiet...",
+  "...since my father died.",
+  "I have a very strange feeling...",
+  "...that someone is watching me.",
+  "But I don't know who."
+];
+let storyIdx=0;
+let introStarted=false;
+
+// ─────────────────────────────────────────────
+// DOM REFS
+// ─────────────────────────────────────────────
+const $=id=>document.getElementById(id);
+const introEl=$('intro');
+const storyEl=$('story-text');
+const loadEl=$('loading');
+const msgEl=$('message');
+const hintEl=$('hint');
+const flashEl=$('flash');
+
+// ─────────────────────────────────────────────
+// TTS
+// ─────────────────────────────────────────────
+const TTS = (typeof window !== 'undefined' && 'speechSynthesis' in window) ? window.speechSynthesis : null;
+
+function speak(text, rate=0.75, pitch_=0.8, vol=1, onEnd){
+  if(!TTS){ if(onEnd) setTimeout(onEnd, text.length * 60); return; }
+  try {
+    TTS.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate=rate; u.pitch=pitch_; u.volume=vol;
+    try {
+      const voices = TTS.getVoices();
+      const v = voices.find(v=>v.lang.startsWith('en')&&(v.name.includes('Daniel')||v.name.includes('Alex')||v.name.includes('Google UK')||v.name.includes('English')));
+      if(v) u.voice=v;
+    } catch(e){}
+    if(onEnd) { u.onend=onEnd; u.onerror=onEnd; }
+    TTS.speak(u);
+  } catch(e){ if(onEnd) setTimeout(onEnd, text.length * 60); }
+}
+
+function speakWhisper(text){
+  speak(text, 0.55, 0.3, 0.25, null);
+}
+
+function runStory(){
+  if(storyIdx>=storyLines.length){
+    setTimeout(()=>{
+      introEl.style.opacity='0';
+      setTimeout(startGame,2000);
+    },800);
+    return;
+  }
+  storyEl.style.opacity='0';
+  setTimeout(()=>{
+    storyEl.textContent=storyLines[storyIdx];
+    storyEl.style.opacity='1';
+    speak(storyLines[storyIdx],0.7,0.75,1,()=>{
+      storyIdx++;
+      setTimeout(runStory, storyIdx===storyLines.length?500:600);
+    });
+  },600);
+}
+
+// ─────────────────────────────────────────────
+// TAP TO BEGIN
+// ─────────────────────────────────────────────
+function onBegin(e){
+  e.preventDefault();
+  if(introStarted)return;
+  introStarted=true;
+  $('tap-prompt').style.display='none';
+  audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  try{ if(TTS) TTS.getVoices(); }catch(e){}
+  setTimeout(runStory,400);
+}
+$('tap-prompt').addEventListener('click',onBegin);
+$('tap-prompt').addEventListener('touchstart',onBegin);
+
+// Hide loading when page ready
+window.addEventListener('load',()=>{ loadEl.style.display='none'; });
+
+// ─────────────────────────────────────────────
+// AUDIO HELPERS
+// ─────────────────────────────────────────────
+function makeNoise(dur=2){
+  const len=audioCtx.sampleRate*dur;
+  const buf=audioCtx.createBuffer(1,len,audioCtx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+  return buf;
+}
+
+function startRain(){
+  const src=audioCtx.createBufferSource();
+  src.buffer=makeNoise(4); src.loop=true;
+  const hp=audioCtx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=3500;
+  const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=9000;
+  const g=audioCtx.createGain(); g.gain.value=0.055;
+  src.connect(hp);hp.connect(lp);lp.connect(g);g.connect(audioCtx.destination);
+  src.start();
+  sceneObj.rainGain=g;
+  schdThunder();
+}
+
+function schdThunder(){
+  const d=15000+Math.random()*25000;
+  setTimeout(()=>{thunder();schdThunder();},d);
+}
+
+function thunder(){
+  const src=audioCtx.createBufferSource();
+  src.buffer=makeNoise(3);
+  const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=280;
+  const g=audioCtx.createGain();
+  const t=audioCtx.currentTime;
+  g.gain.setValueAtTime(0,t);
+  g.gain.linearRampToValueAtTime(0.7,t+0.06);
+  g.gain.exponentialRampToValueAtTime(0.001,t+3);
+  src.connect(lp);lp.connect(g);g.connect(audioCtx.destination);
+  src.start();
+  flashScreen(1,60);
+  setTimeout(()=>flashScreen(0.3,50),130);
+  if(sceneObj.rainGain){
+    sceneObj.rainGain.gain.setValueAtTime(0.055,audioCtx.currentTime);
+    sceneObj.rainGain.gain.linearRampToValueAtTime(0.12,audioCtx.currentTime+0.3);
+    sceneObj.rainGain.gain.linearRampToValueAtTime(0.055,audioCtx.currentTime+2.5);
+  }
+}
+
+function flashScreen(op,dur){
+  flashEl.style.opacity=op;
+  setTimeout(()=>{flashEl.style.opacity=0;},dur);
+}
+
+function playCreak(){
+  const osc=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  osc.type='sawtooth';
+  osc.frequency.setValueAtTime(90+Math.random()*50,audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(50+Math.random()*20,audioCtx.currentTime+0.7);
+  g.gain.setValueAtTime(0.07,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.9);
+  osc.connect(g);g.connect(audioCtx.destination);
+  osc.start();osc.stop(audioCtx.currentTime+0.9);
+}
+
+function playFootstep(){
+  const src=audioCtx.createBufferSource();
+  src.buffer=makeNoise(0.12);
+  const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=500;
+  const g=audioCtx.createGain();
+  g.gain.setValueAtTime(0.13,audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.18);
+  src.connect(lp);lp.connect(g);g.connect(audioCtx.destination);
+  src.start();
+}
+
+function playDistantSteps(n=6){
+  for(let i=0;i<n;i++){
+    setTimeout(()=>{
+      const osc=audioCtx.createOscillator();
+      const g=audioCtx.createGain();
+      osc.type='sine';osc.frequency.value=55+Math.random()*20;
+      g.gain.setValueAtTime(0.12,audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.25);
+      osc.connect(g);g.connect(audioCtx.destination);
+      osc.start();osc.stop(audioCtx.currentTime+0.25);
+    },i*(380+Math.random()*100));
+  }
+}
+
+function playKnock(){
+  for(let i=0;i<3;i++){
+    setTimeout(()=>{
+      const src=audioCtx.createBufferSource();
+      src.buffer=makeNoise(0.08);
+      const lp=audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=700;
+      const g=audioCtx.createGain();
+      g.gain.setValueAtTime(0.4,audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.12);
+      src.connect(lp);lp.connect(g);g.connect(audioCtx.destination);
+      src.start();
+      cameraShake(0.025,80);
+    },i*500);
+  }
+}
+
+function playDoorCreak(){
+  const osc=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  osc.type='sine';
+  osc.frequency.setValueAtTime(190,audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(100,audioCtx.currentTime+1.8);
+  g.gain.setValueAtTime(0,audioCtx.currentTime);
+  g.gain.linearRampToValueAtTime(0.09,audioCtx.currentTime+0.15);
+  g.gain.linearRampToValueAtTime(0.04,audioCtx.currentTime+1.6);
+  g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+1.9);
+  osc.connect(g);g.connect(audioCtx.destination);
+  osc.start();osc.stop(audioCtx.currentTime+1.9);
+}
+
+function startHeartbeat(){
+  if(heartbeatTimer)return;
+  const beat=()=>{
+    if(!heartbeatTimer)return;
+    const osc=audioCtx.createOscillator();
+    const g=audioCtx.createGain();
+    osc.type='sine';osc.frequency.value=58;
+    g.gain.setValueAtTime(0.25,audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.3);
+    osc.connect(g);g.connect(audioCtx.destination);
+    osc.start();osc.stop(audioCtx.currentTime+0.3);
+    heartbeatTimer=setTimeout(beat,680);
+  };
+  heartbeatTimer=setTimeout(beat,0);
+}
+
+function stopHeartbeat(){
+  clearTimeout(heartbeatTimer);
+  heartbeatTimer=null;
+}
+
+// ─────────────────────────────────────────────
+// CAMERA SHAKE
+// ─────────────────────────────────────────────
+function cameraShake(amt,dur){
+  const end=Date.now()+dur;
+  const s=()=>{
+    if(Date.now()>end){shakeOffset.x=0;shakeOffset.y=0;return;}
+    shakeOffset.x=(Math.random()-0.5)*amt;
+    shakeOffset.y=(Math.random()-0.5)*amt;
+    requestAnimationFrame(s);
+  };s();
+}
+
+// ─────────────────────────────────────────────
+// FLICKER
+// ─────────────────────────────────────────────
+function flickerLights(n=4,cb){
+  let i=0;
+  const f=()=>{
+    if(i>=n*2){
+      lampLight.intensity=1.3;
+      if(ambientLight)ambientLight.intensity=0.04;
+      if(cb)cb();return;
+    }
+    const on=(i%2===1);
+    lampLight.intensity=on?1.3:0.05;
+    if(ambientLight)ambientLight.intensity=on?0.04:0.005;
+    i++;
+    setTimeout(f,80+Math.random()*120);
+  };
+  f();
+}
+
+// ─────────────────────────────────────────────
+// MESSAGES
+// ─────────────────────────────────────────────
+function showMsg(txt,dur=3000){
+  msgEl.textContent=txt;
+  msgEl.style.display='block';
+  msgEl.style.opacity='1';
+  if(msgTimer)clearTimeout(msgTimer);
+  msgTimer=setTimeout(()=>{
+    msgEl.style.transition='opacity 1.2s';
+    msgEl.style.opacity='0';
+    setTimeout(()=>{msgEl.style.display='none';},1200);
+  },dur);
+}
+
+// ─────────────────────────────────────────────
+// THREE.JS INIT
+// ─────────────────────────────────────────────
+function initThree(){
+  clock=new THREE.Clock();
+  scene=new THREE.Scene();
+  scene.fog=new THREE.FogExp2(0x000306,0.06);
+  scene.background=new THREE.Color(0x000204);
+
+  camera=new THREE.PerspectiveCamera(72,innerWidth/innerHeight,0.05,60);
+  camera.position.set(0.4,1.65,1.8);
+
+  renderer=new THREE.WebGLRenderer({canvas:$('c'),antialias:true,powerPreference:'high-performance'});
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.shadowMap.enabled=true;
+  renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  renderer.outputEncoding=THREE.sRGBEncoding;
+  renderer.toneMapping=THREE.ReinhardToneMapping;
+  renderer.toneMappingExposure=0.75;
+
+  window.addEventListener('resize',()=>{
+    camera.aspect=innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+  });
+}
+
+// ─────────────────────────────────────────────
+// BUILD SCENE
+// ─────────────────────────────────────────────
+function buildScene(){
+  // Dimensions: room is 5.5w × 3.2h × 6.5d
+  const RW=5.5, RH=3.2, RD=6.5;
+
+  // ── LIGHTS ──
+  ambientLight=new THREE.AmbientLight(0x040a18,0.04);
+  scene.add(ambientLight);
+
+  // Warm lamp
+  lampLight=new THREE.PointLight(0xff9955,1.3,7.5);
+  lampLight.position.set(-1.8,1.15,0.6);
+  lampLight.castShadow=true;
+  lampLight.shadow.mapSize.set(512,512);
+  lampLight.shadow.camera.near=0.1;
+  lampLight.shadow.camera.far=8;
+  scene.add(lampLight);
+
+  // Cold outside trickle through window
+  const moonL=new THREE.PointLight(0x1a3a80,0.07,6);
+  moonL.position.set(-3.5,1.5,0.2);
+  scene.add(moonL);
+
+  // ── MATERIALS ──
+  const mWall =new THREE.MeshStandardMaterial({color:0x1e1510,roughness:0.95,metalness:0});
+  const mWall2=new THREE.MeshStandardMaterial({color:0x17110e,roughness:0.95,metalness:0});
+  const mFloor=new THREE.MeshStandardMaterial({color:0x14100a,roughness:0.85,metalness:0});
+  const mCeil =new THREE.MeshStandardMaterial({color:0x1a1612,roughness:1,metalness:0});
+  const mWood =new THREE.MeshStandardMaterial({color:0x2e1e12,roughness:0.75,metalness:0});
+  const mBed  =new THREE.MeshStandardMaterial({color:0x211520,roughness:0.9,metalness:0});
+  const mPillow=new THREE.MeshStandardMaterial({color:0xb09075,roughness:0.9,metalness:0});
+  const mDark =new THREE.MeshStandardMaterial({color:0x050404,roughness:1,metalness:0});
+  const mFrame=new THREE.MeshStandardMaterial({color:0x140d08,roughness:0.9,metalness:0});
+
+  // ── ROOM SHELL ──
+  // Floor
+  const floor=new THREE.Mesh(new THREE.PlaneGeometry(RW,RD),mFloor);
+  floor.rotation.x=-Math.PI/2; floor.receiveShadow=true; scene.add(floor);
+  // Ceiling
+  const ceil=new THREE.Mesh(new THREE.PlaneGeometry(RW,RD),mCeil);
+  ceil.rotation.x=Math.PI/2; ceil.position.y=RH; scene.add(ceil);
+  // Back wall
+  const bwall=new THREE.Mesh(new THREE.PlaneGeometry(RW,RH),mWall);
+  bwall.position.set(0,RH/2,RD/2); bwall.rotation.y=Math.PI; bwall.receiveShadow=true; scene.add(bwall);
+  // Right wall
+  const rwall=new THREE.Mesh(new THREE.PlaneGeometry(RD,RH),mWall2);
+  rwall.position.set(RW/2,RH/2,0); rwall.rotation.y=-Math.PI/2; rwall.receiveShadow=true; scene.add(rwall);
+
+  // Left wall with window cutout (4 planes around window)
+  const winCX=-RW/2, winY=0.95, winW=1.7, winH=1.35;
+  const lWB=new THREE.Mesh(new THREE.PlaneGeometry(RD,winY),mWall2); // bottom strip
+  lWB.position.set(winCX,winY/2,0); lWB.rotation.y=Math.PI/2; scene.add(lWB);
+  const lWT=new THREE.Mesh(new THREE.PlaneGeometry(RD,RH-winY-winH),mWall2); // top strip
+  lWT.position.set(winCX,winY+winH+(RH-winY-winH)/2,0); lWT.rotation.y=Math.PI/2; scene.add(lWT);
+  const lWL=new THREE.Mesh(new THREE.PlaneGeometry((RD-winW)/2-0.1,winH),mWall2); // left of window
+  lWL.position.set(winCX,winY+winH/2,-(winW/2+(RD-winW)/4+0.1)); lWL.rotation.y=Math.PI/2; scene.add(lWL);
+  const lWR=new THREE.Mesh(new THREE.PlaneGeometry((RD-winW)/2-0.1,winH),mWall2); // right of window
+  lWR.position.set(winCX,winY+winH/2, winW/2+(RD-winW)/4+0.1); lWR.rotation.y=Math.PI/2; scene.add(lWR);
+
+  // Front wall with door cutout
+  const DW=1.0, DH=2.25;
+  const fWL=new THREE.Mesh(new THREE.PlaneGeometry((RW-DW)/2-0.1,RH),mWall);
+  fWL.position.set(-(DW/2+(RW-DW)/4+0.1),RH/2,-RD/2); scene.add(fWL);
+  const fWR=new THREE.Mesh(new THREE.PlaneGeometry((RW-DW)/2-0.1,RH),mWall);
+  fWR.position.set(DW/2+(RW-DW)/4+0.1,RH/2,-RD/2); scene.add(fWR);
+  const fWT=new THREE.Mesh(new THREE.PlaneGeometry(DW+0.1,RH-DH),mWall);
+  fWT.position.set(0,DH+(RH-DH)/2,-RD/2); scene.add(fWT);
+
+  // ── WINDOW FRAME ──
+  const fMat=mFrame;
+  const addFrame=(geo,x,y,z,ry=0)=>{
+    const m=new THREE.Mesh(geo,fMat); m.position.set(x,y,z); if(ry)m.rotation.y=ry; scene.add(m);
+  };
+  addFrame(new THREE.BoxGeometry(0.1,winH+0.12,0.12),winCX+0.05,winY+winH/2,-(winW/2)  ,0);
+  addFrame(new THREE.BoxGeometry(0.1,winH+0.12,0.12),winCX+0.05,winY+winH/2, winW/2    ,0);
+  addFrame(new THREE.BoxGeometry(0.1,0.1,winW+0.06 ),winCX+0.05,winY       , 0         ,0);
+  addFrame(new THREE.BoxGeometry(0.1,0.1,winW+0.06 ),winCX+0.05,winY+winH  , 0         ,0);
+  addFrame(new THREE.BoxGeometry(0.1,winH,0.07      ),winCX+0.05,winY+winH/2, 0         ,0);
+  addFrame(new THREE.BoxGeometry(0.1,0.06,winW      ),winCX+0.05,winY+winH/2, 0         ,0);
+
+  // Window glass
+  const glassMat=new THREE.MeshStandardMaterial({
+    color:0x08152a,transparent:true,opacity:0.75,roughness:0.05,
+    emissive:0x030a1a,emissiveIntensity:0.5,depthWrite:false
+  });
+  const glass=new THREE.Mesh(new THREE.PlaneGeometry(winW,winH),glassMat);
+  glass.position.set(winCX+0.07,winY+winH/2,0); glass.rotation.y=Math.PI/2; scene.add(glass);
+
+  // ── RAIN PARTICLES ──
+  const RAIN_N=700;
+  rainPositions=new Float32Array(RAIN_N*3);
+  rainVels=new Float32Array(RAIN_N);
+  for(let i=0;i<RAIN_N;i++){
+    rainPositions[i*3  ]=winCX-0.3-Math.random()*2.5;
+    rainPositions[i*3+1]=Math.random()*5-0.5;
+    rainPositions[i*3+2]=(Math.random()-0.5)*winW;
+    rainVels[i]=4+Math.random()*4;
+  }
+  const rainGeo=new THREE.BufferGeometry();
+  rainGeo.setAttribute('position',new THREE.BufferAttribute(rainPositions,3));
+  const rainMat=new THREE.PointsMaterial({color:0x4070c0,size:0.018,transparent:true,opacity:0.45,depthWrite:false});
+  rainPoints=new THREE.Points(rainGeo,rainMat);
+  scene.add(rainPoints);
+
+  // ── BED ──
+  const bedFrame=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.35,3.0),mWood);
+  bedFrame.position.set(1.6,0.175,1.6); bedFrame.castShadow=true; bedFrame.receiveShadow=true; scene.add(bedFrame);
+  const mattress=new THREE.Mesh(new THREE.BoxGeometry(1.85,0.22,2.85),mBed);
+  mattress.position.set(1.6,0.46,1.6); mattress.castShadow=true; scene.add(mattress);
+  const headboard=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.7,0.12),mWood);
+  headboard.position.set(1.6,0.7,RD/2-0.26); headboard.castShadow=true; scene.add(headboard);
+  const pillow=new THREE.Mesh(new THREE.BoxGeometry(1.5,0.13,0.45),mPillow);
+  pillow.position.set(1.6,0.595,2.55); pillow.castShadow=true; scene.add(pillow);
+  const blanket=new THREE.Mesh(new THREE.BoxGeometry(1.8,0.16,1.95),
+    new THREE.MeshStandardMaterial({color:0x1a1225,roughness:1}));
+  blanket.position.set(1.6,0.585,1.2); blanket.castShadow=true; scene.add(blanket);
+
+  // ── BEDSIDE TABLE ──
+  const bsTable=new THREE.Mesh(new THREE.BoxGeometry(0.48,0.52,0.48),mWood);
+  bsTable.position.set(-1.7,0.26,0.5); bsTable.castShadow=true; bsTable.receiveShadow=true; scene.add(bsTable);
+  // Lamp base
+  const lBase=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.09,0.32,8),
+    new THREE.MeshStandardMaterial({color:0x2a1508,roughness:0.8}));
+  lBase.position.set(-1.7,0.7,0.5); scene.add(lBase);
+  // Lamp shade
+  const lShade=new THREE.Mesh(new THREE.ConeGeometry(0.2,0.25,8),
+    new THREE.MeshStandardMaterial({color:0xcc8055,emissive:0xff9944,emissiveIntensity:0.4,transparent:true,opacity:0.88,side:THREE.DoubleSide}));
+  lShade.position.set(-1.7,0.98,0.5); scene.add(lShade);
+
+  // ── WARDROBE ──
+  const wardrobe=new THREE.Mesh(new THREE.BoxGeometry(1.3,2.1,0.55),mWood);
+  wardrobe.position.set(2.2,1.05,-2.2); wardrobe.castShadow=true; wardrobe.receiveShadow=true; scene.add(wardrobe);
+  const hMat=new THREE.MeshStandardMaterial({color:0x7a5030,metalness:0.5,roughness:0.5});
+  [-0.25,0.25].forEach(ox=>{
+    const h=new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.015,0.12,6),hMat);
+    h.rotation.z=Math.PI/2; h.position.set(2.2+ox,1.05,-1.94); scene.add(h);
+  });
+
+  // ── DESK ──
+  const desk=new THREE.Mesh(new THREE.BoxGeometry(1.4,0.05,0.65),mWood);
+  desk.position.set(2.0,0.74,-0.9); desk.castShadow=true; desk.receiveShadow=true; scene.add(desk);
+  [[-0.6,-0.28],[0.6,-0.28],[-0.6,0.28],[0.6,0.28]].forEach(([dx,dz])=>{
+    const leg=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.74,0.06),mWood);
+    leg.position.set(2+dx,0.37,-0.9+dz); scene.add(leg);
+  });
+
+  // Father's photo on desk
+  const photoFrm=new THREE.Mesh(new THREE.BoxGeometry(0.2,0.26,0.04),mWood);
+  photoFrm.position.set(2.38,0.9,-1.08); photoFrm.castShadow=true; scene.add(photoFrm);
+  const photoMesh=new THREE.Mesh(new THREE.PlaneGeometry(0.16,0.2),
+    new THREE.MeshStandardMaterial({color:0x555050,roughness:1}));
+  photoMesh.position.set(2.38,0.9,-1.057); scene.add(photoMesh);
+  sceneObj.photoFrame=photoFrm;
+  interactable.push({mesh:photoFrm,action:'photo',label:'Look at the photo'});
+
+  // ── RUG ──
+  const rug=new THREE.Mesh(new THREE.PlaneGeometry(2.8,2.0),
+    new THREE.MeshStandardMaterial({color:0x3a1010,roughness:1}));
+  rug.rotation.x=-Math.PI/2; rug.position.set(-0.1,0.002,-0.2); scene.add(rug);
+
+  // ── CURTAINS ──
+  const curtMat=new THREE.MeshStandardMaterial({color:0x1a0d0d,roughness:1,transparent:true,opacity:0.9,side:THREE.DoubleSide});
+  const curt1=new THREE.Mesh(new THREE.PlaneGeometry(0.5,winH+0.2),curtMat);
+  curt1.position.set(winCX+0.1,winY+winH/2,-winW/2-0.08); curt1.rotation.y=Math.PI/2; scene.add(curt1);
+  const curt2=new THREE.Mesh(new THREE.PlaneGeometry(0.5,winH+0.2),curtMat);
+  curt2.position.set(winCX+0.1,winY+winH/2, winW/2+0.08); curt2.rotation.y=Math.PI/2; scene.add(curt2);
+
+  // ── DOOR (pivot group) ──
+  doorPivot=new THREE.Group();
+  doorPivot.position.set(-DW/2,0,-RD/2+0.04);
+  scene.add(doorPivot);
+  const doorMesh=new THREE.Mesh(new THREE.BoxGeometry(0.07,DH,DW),mWood);
+  doorMesh.position.set(0,DH/2,DW/2);
+  doorPivot.add(doorMesh);
+  // Door handle
+  const dHandle=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.12,8),hMat);
+  dHandle.rotation.z=Math.PI/2; dHandle.position.set(0.06,DH/2,DW-0.15);
+  doorPivot.add(dHandle);
+  interactable.push({mesh:doorMesh,action:'door',label:'Open the door'});
+  sceneObj.door=doorMesh;
+
+  // Door frame
+  const dfMat=mFrame;
+  const addDf=(geo,x,y,z)=>{const m=new THREE.Mesh(geo,dfMat);m.position.set(x,y,z);scene.add(m);};
+  addDf(new THREE.BoxGeometry(0.1,DH,0.2),-DW/2,DH/2,-RD/2);
+  addDf(new THREE.BoxGeometry(0.1,DH,0.2), DW/2,DH/2,-RD/2);
+  addDf(new THREE.BoxGeometry(DW+0.12,0.1,0.2),0,DH,-RD/2);
+
+  // ── HALLWAY ──
+  const HHW=DW+0.05;
+  const hallL=new THREE.Mesh(new THREE.PlaneGeometry(7,RH),mDark);
+  hallL.position.set(-HHW/2,RH/2,-RD/2-3.5); hallL.rotation.y=Math.PI/2; scene.add(hallL);
+  const hallR=new THREE.Mesh(new THREE.PlaneGeometry(7,RH),mDark);
+  hallR.position.set(HHW/2,RH/2,-RD/2-3.5); hallR.rotation.y=-Math.PI/2; scene.add(hallR);
+  const hallF=new THREE.Mesh(new THREE.PlaneGeometry(7,RH),mDark);
+  hallF.rotation.x=-Math.PI/2; hallF.position.set(0,0,-RD/2-3.5); scene.add(hallF);
+  const hallC=new THREE.Mesh(new THREE.PlaneGeometry(HHW,7),mDark);
+  hallC.rotation.x=Math.PI/2; hallC.position.set(0,RH,-RD/2-3.5); scene.add(hallC);
+  const hallEnd=new THREE.Mesh(new THREE.PlaneGeometry(HHW,RH),mDark);
+  hallEnd.position.set(0,RH/2,-RD/2-7); scene.add(hallEnd);
+
+  // ── SHADOW UNDER DOOR ──
+  const sudMat=new THREE.MeshStandardMaterial({color:0x000000,transparent:true,opacity:0,roughness:1,depthWrite:false});
+  const sud=new THREE.Mesh(new THREE.PlaneGeometry(DW-0.1,0.08),sudMat);
+  sud.rotation.x=-Math.PI/2; sud.position.set(0,0.003,-RD/2+0.1); scene.add(sud);
+  sceneObj.sudMat=sudMat; sceneObj.sud=sud;
+
+  // ── SHADOW FIGURE ──
+  const figMat=new THREE.MeshStandardMaterial({color:0x000000,transparent:true,opacity:0,roughness:1});
+  const figGrp=new THREE.Group();
+  const figBody=new THREE.Mesh(new THREE.BoxGeometry(0.38,1.15,0.18),figMat);
+  figBody.position.y=0.6; figGrp.add(figBody);
+  const figHead=new THREE.Mesh(new THREE.SphereGeometry(0.17,8,8),figMat);
+  figHead.position.y=1.34; figGrp.add(figHead);
+  [[-.11,-0.35],[.11,-0.35]].forEach(([x,y])=>{
+    const l=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.68,0.14),figMat);
+    l.position.set(x,y,0); figGrp.add(l);
+  });
+  figGrp.position.set(0,0,-RD/2-6.2);
+  figGrp.visible=false;
+  scene.add(figGrp);
+  sceneObj.figGrp=figGrp; sceneObj.figMat=figMat;
+
+  // ── NOTE ON NIGHTSTAND ──
+  const noteMesh=new THREE.Mesh(new THREE.BoxGeometry(0.18,0.001,0.14),
+    new THREE.MeshStandardMaterial({color:0xd4c8a8,roughness:0.9}));
+  noteMesh.position.set(-1.7,0.526,0.38); scene.add(noteMesh);
+  interactable.push({mesh:noteMesh,action:'note',label:'Read the note'});
+  sceneObj.noteMesh=noteMesh;
+}
+
+// ─────────────────────────────────────────────
+// HORROR EVENTS
+// ─────────────────────────────────────────────
+function scheduleHorrorEvents(){
+  const events=[
+    {t:18000, fn:()=>{
+      flickerLights(3);
+      playCreak();
+    }},
+    {t:38000, fn:()=>{
+      showMsg('"…footsteps. Coming from above you."',3500);
+      setTimeout(playDistantSteps,400);
+    }},
+    {t:62000, fn:()=>{
+      // Shadow under door fades in
+      fadeVal(sceneObj.sudMat,'opacity',0,0.9,1200,()=>{
+        setTimeout(()=>fadeVal(sceneObj.sudMat,'opacity',0.9,0,1500),4500);
+      });
+      startHeartbeat(); setTimeout(stopHeartbeat,8000);
+    }},
+    {t:88000, fn:()=>{
+      speakWhisper("...I see you...");
+      showMsg('"Did you hear that?"',2500);
+      cameraShake(0.015,300);
+    }},
+    {t:115000, fn:()=>{
+      flickerLights(6,()=>{
+        showMsg('"There was something there... in the corner."',3000);
+      });
+    }},
+    {t:140000, fn:()=>{
+      showMsg('*knock*   *knock*   *knock*',3000);
+      playKnock();
+      startHeartbeat(); setTimeout(stopHeartbeat,7000);
+    }},
+    {t:168000, fn:()=>{
+      if(!doorOpen){
+        showMsg('"The door... it\'s opening on its own."',3500);
+        playDoorCreak();
+        setTimeout(openDoor,600);
+      }
+    }},
+    {t:200000, fn:()=>{
+      flickerLights(9);
+      setTimeout(playCreak,200);
+      speakWhisper("...come find me...");
+    }},
+    {t:228000, fn:()=>{
+      // Show figure
+      sceneObj.figGrp.visible=true;
+      fadeVal(sceneObj.figMat,'opacity',0,0.9,1200);
+      showMsg('"There\'s someone standing in the hallway."',4500);
+      startHeartbeat();
+      setTimeout(()=>{
+        fadeVal(sceneObj.figMat,'opacity',0.9,0,1500,()=>{sceneObj.figGrp.visible=false;});
+        stopHeartbeat();
+      },7000);
+    }},
+    {t:270000, fn:()=>{
+      speakWhisper("...it's your father...");
+      thunder();
+      showMsg('"Dad...?"',4000);
+    }},
+  ];
+
+  events.forEach(ev=>{
+    horrorTimers.push(setTimeout(ev.fn,ev.t));
+  });
+}
+
+function fadeVal(obj,prop,from,to,dur,cb){
+  const steps=40, step=(to-from)/steps, interval=dur/steps;
+  let cur=from, n=0;
+  const id=setInterval(()=>{
+    cur+=step; n++;
+    obj[prop]=Math.max(Math.min(cur,Math.max(from,to)),Math.min(from,to));
+    if(n>=steps){clearInterval(id);obj[prop]=to;if(cb)cb();}
+  },interval);
+}
+
+function openDoor(){
+  if(doorOpen)return;
+  doorOpen=true;
+  const target=-Math.PI*0.72;
+  let a=0;
+  const id=setInterval(()=>{
+    a=Math.max(a-0.018,target);
+    doorPivot.rotation.y=a;
+    if(a<=target)clearInterval(id);
+  },25);
+}
+
+// ─────────────────────────────────────────────
+// INTERACTION
+// ─────────────────────────────────────────────
+const raycaster=new THREE.Raycaster();
+function tryInteract(){
+  raycaster.setFromCamera(new THREE.Vector2(0,0),camera);
+  const hits=raycaster.intersectObjects(interactable.map(o=>o.mesh));
+  if(hits.length>0&&hits[0].distance<2.8){
+    const obj=interactable.find(o=>o.mesh===hits[0].object);
+    if(obj)doAction(obj.action);
+  }
+}
+
+function doAction(a){
+  if(a==='photo'){
+    showMsg('"Dad… I miss you. What happened to this house?"',4500);
+    playCreak();
+  } else if(a==='door'){
+    if(!doorOpen){playDoorCreak();setTimeout(openDoor,500);showMsg('"The hallway is pitch dark."',2500);}
+    else showMsg('"The door is already open."',2000);
+  } else if(a==='note'){
+    showMsg('"Son — if you\'re reading this, I\'m sorry. Don\'t look for me. — Dad"',5000);
+    speak("Son. If you're reading this, I'm sorry. Don't look for me.",0.65,0.75,0.9);
+  }
+}
+
+// ─────────────────────────────────────────────
+// CONTROLS SETUP
+// ─────────────────────────────────────────────
+function setupControls(){
+  if(!MOBILE){
+    // Desktop
+    document.addEventListener('click',()=>{
+      if(playerActive) renderer.domElement.requestPointerLock();
+    });
+    document.addEventListener('mousemove',e=>{
+      if(document.pointerLockElement===renderer.domElement){
+        yaw  -=e.movementX*0.0022;
+        pitch-=e.movementY*0.0022;
+        pitch=Math.max(-Math.PI*0.35,Math.min(Math.PI*0.35,pitch));
+      }
+    });
+    document.addEventListener('keydown',e=>{
+      keys[e.code]=true;
+      if(e.code==='KeyE'||e.code==='KeyF') tryInteract();
+    });
+    document.addEventListener('keyup',e=>{ keys[e.code]=false; });
+    hintEl.style.display='block';
+    hintEl.textContent='WASD — Move  ·  Mouse — Look  ·  E — Interact  ·  Click to lock mouse';
+  } else {
+    // Mobile
+    $('joystick-wrap').style.display='block';
+    $('interact-btn').style.display='flex';
+
+    const joyWrap=$('joystick-wrap');
+    const knob=$('joy-knob');
+    let jid=null, jx0=0, jy0=0;
+
+    joyWrap.addEventListener('touchstart',e=>{
+      e.preventDefault();
+      const t=e.changedTouches[0];
+      jid=t.identifier; jx0=t.clientX; jy0=t.clientY; joyActive=true;
+    },{passive:false});
+    joyWrap.addEventListener('touchmove',e=>{
+      e.preventDefault();
+      for(const t of e.changedTouches){
+        if(t.identifier!==jid)continue;
+        const dx=t.clientX-jx0, dy=t.clientY-jy0;
+        const len=Math.sqrt(dx*dx+dy*dy), maxR=42;
+        const cx=len>maxR?dx*maxR/len:dx, cy=len>maxR?dy*maxR/len:dy;
+        knob.style.transform=`translate(calc(-50% + ${cx}px), calc(-50% + ${cy}px))`;
+        joyDelta.x=cx/maxR; joyDelta.y=cy/maxR;
+      }
+    },{passive:false});
+    joyWrap.addEventListener('touchend',e=>{
+      joyActive=false; joyDelta.x=0; joyDelta.y=0;
+      knob.style.transform='translate(-50%,-50%)';
+    },{passive:false});
+
+    const lz=$('look-zone');
+    lz.addEventListener('touchstart',e=>{
+      e.preventDefault();
+      const t=e.changedTouches[0];
+      lookTouchId=t.identifier; lookLastX=t.clientX; lookLastY=t.clientY;
+    },{passive:false});
+    lz.addEventListener('touchmove',e=>{
+      e.preventDefault();
+      for(const t of e.changedTouches){
+        if(t.identifier!==lookTouchId)continue;
+        yaw  -=(t.clientX-lookLastX)*0.005;
+        pitch-=(t.clientY-lookLastY)*0.005;
+        pitch=Math.max(-Math.PI*0.35,Math.min(Math.PI*0.35,pitch));
+        lookLastX=t.clientX; lookLastY=t.clientY;
+      }
+    },{passive:false});
+    lz.addEventListener('touchend',()=>{ lookTouchId=null; });
+
+    $('interact-btn').addEventListener('touchstart',e=>{ e.preventDefault(); tryInteract(); },{passive:false});
+  }
+}
+
+// ─────────────────────────────────────────────
+// UPDATE INTERACTION HINT (desktop)
+// ─────────────────────────────────────────────
+function updateHint(){
+  if(MOBILE)return;
+  raycaster.setFromCamera(new THREE.Vector2(0,0),camera);
+  const hits=raycaster.intersectObjects(interactable.map(o=>o.mesh));
+  if(hits.length>0&&hits[0].distance<2.8){
+    const obj=interactable.find(o=>o.mesh===hits[0].object);
+    if(obj) hintEl.textContent=`E — ${obj.label}`;
+  } else {
+    hintEl.textContent='WASD — Move  ·  Mouse — Look  ·  E — Interact';
+  }
+}
+
+// ─────────────────────────────────────────────
+// GAME LOOP
+// ─────────────────────────────────────────────
+const ROOM={minX:-2.4,maxX:2.4,minZ:-3.0,maxZ:3.1};
+const HALL={minX:-0.48,maxX:0.48,minZ:-3.0,maxZ:-10.0};
+
+function updateMovement(dt){
+  let dx=0,dz=0;
+  if(!MOBILE){
+    if(keys['KeyW']||keys['ArrowUp'])   dz-=1;
+    if(keys['KeyS']||keys['ArrowDown']) dz+=1;
+    if(keys['KeyA']||keys['ArrowLeft']) dx-=1;
+    if(keys['KeyD']||keys['ArrowRight'])dx+=1;
+  } else if(joyActive){
+    dx=joyDelta.x; dz=joyDelta.y;
+  }
+
+  if(dx!==0||dz!==0){
+    stepTimer-=dt;
+    if(stepTimer<=0&&audioCtx&&audioCtx.state==='running'){
+      playFootstep(); stepTimer=0.38+Math.random()*0.06;
+    }
+    const spd=2.4;
+    const fwd=new THREE.Vector3(-Math.sin(yaw),0,-Math.cos(yaw));
+    const rgt=new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
+    const mv=new THREE.Vector3();
+    mv.addScaledVector(fwd,-dz*spd*dt);
+    mv.addScaledVector(rgt, dx*spd*dt);
+    const np=camera.position.clone().add(mv);
+
+    const inRoom=np.x>=ROOM.minX&&np.x<=ROOM.maxX&&np.z>=ROOM.minZ&&np.z<=ROOM.maxZ;
+    const inHall=doorOpen&&np.x>=HALL.minX&&np.x<=HALL.maxX&&np.z<=ROOM.minZ&&np.z>=HALL.maxZ;
+
+    if(inRoom||inHall){
+      camera.position.x=np.x;
+      camera.position.z=np.z;
+    }
+    camera.position.y=1.65;
+  }
+}
+
+function updateRain(dt){
+  for(let i=0;i<rainPositions.length/3;i++){
+    rainPositions[i*3+1]-=rainVels[i]*dt;
+    if(rainPositions[i*3+1]<-0.5){
+      rainPositions[i*3+1]=5+Math.random()*2;
+    }
+  }
+  rainPoints.geometry.attributes.position.needsUpdate=true;
+}
+
+let lightFlickerTime=0;
+function updateAtmosphere(t){
+  // Subtle random light flicker
+  lightFlickerTime+=0.016;
+  const fl=Math.sin(lightFlickerTime*3.7)*0.04+Math.sin(lightFlickerTime*11.3)*0.015;
+  if(lampLight) lampLight.intensity=1.3+fl;
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05);
+  if(playerActive){
+    updateMovement(dt);
+    updateRain(dt);
+    updateAtmosphere(clock.elapsedTime);
+    updateHint();
+  }
+  camera.rotation.order='YXZ';
+  camera.rotation.y=yaw+shakeOffset.x;
+  camera.rotation.x=pitch+shakeOffset.y;
+  renderer.render(scene,camera);
+}
+
+// ─────────────────────────────────────────────
+// START GAME
+// ─────────────────────────────────────────────
+function startGame(){
+  introEl.style.display='none';
+  $('hud').style.display='block';
+  hintEl.style.display='block';
+  playerActive=true;
+  startRain();
+  scheduleHorrorEvents();
+  animate();
+  showMsg('"You open your eyes. The rain outside beats against the window..."',4500);
+  speak("You open your eyes.",0.7,0.8,0.8);
+}
+
+// Boot
+initThree();
+buildScene();
+setupControls();
+loadEl.style.display='none';
+</script>
+</body>
+</html>
